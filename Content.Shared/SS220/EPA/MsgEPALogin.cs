@@ -1,0 +1,23 @@
+using Lidgren.Network;
+using Robust.Shared.Network;
+using Robust.Shared.Serialization;
+
+namespace Content.Shared.SS220.EPA;
+
+// Sent by client in response to MsgEPAHello if player already has token
+public sealed class MsgEPALogin : NetMessage
+{
+    public override MsgGroups MsgGroup => MsgGroups.Command;
+
+    public string Token = string.Empty;
+
+    public override void ReadFromBuffer(NetIncomingMessage buffer, IRobustSerializer serializer)
+    {
+        Token = buffer.ReadString();
+    }
+
+    public override void WriteToBuffer(NetOutgoingMessage buffer, IRobustSerializer serializer)
+    {
+        buffer.Write(Token);
+    }
+}

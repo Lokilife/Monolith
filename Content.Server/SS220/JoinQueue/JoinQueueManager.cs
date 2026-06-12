@@ -2,7 +2,6 @@
 
 using System.Linq;
 using Content.Server.Connection;
-using Content.Server.SS220.Discord;
 using Content.Shared.CCVar;
 using Content.Shared.SS220.CCVars;
 using Content.Shared.SS220.JoinQueue;
@@ -19,7 +18,7 @@ namespace Content.Server.SS220.JoinQueue;
 /// <summary>
 ///     Manages new player connections when the server is full and queues them up, granting access when a slot becomes free
 /// </summary>
-public sealed class JoinQueueManager
+public sealed partial class JoinQueueManager
 {
     private static readonly Gauge QueueCount = Metrics.CreateGauge(
         "join_queue_count",
@@ -38,11 +37,10 @@ public sealed class JoinQueueManager
             Buckets = Histogram.ExponentialBuckets(1, 2, 14),
         });
 
-    [Dependency] private readonly IPlayerManager _playerManager = default!;
-    [Dependency] private readonly IConnectionManager _connectionManager = default!;
-    [Dependency] private readonly IConfigurationManager _cfg = default!;
-    [Dependency] private readonly IServerNetManager _netManager = default!;
-    [Dependency] private readonly DiscordPlayerManager _discordPlayerManager = default!;
+    [Dependency] private IPlayerManager _playerManager = default!;
+    [Dependency] private IConnectionManager _connectionManager = default!;
+    [Dependency] private IConfigurationManager _cfg = default!;
+    [Dependency] private IServerNetManager _netManager = default!;
 
     /// <summary>
     ///     Queue of active player sessions
@@ -61,7 +59,7 @@ public sealed class JoinQueueManager
         _cfg.OnValueChanged(CCVars220.QueueEnabled, OnQueueCVarChanged, true);
         _playerManager.PlayerStatusChanged += OnPlayerStatusChanged;
 
-        _discordPlayerManager.PlayerVerified += OnPlayerVerified;
+        _netManager.Connected += OnConnected;
     }
 
     private void OnQueueCVarChanged(bool value)
@@ -77,8 +75,10 @@ public sealed class JoinQueueManager
         }
     }
 
-    private async void OnPlayerVerified(object? sender, ICommonSession session)
+    private async void OnConnected(object? sender, NetChannelArgs args)
     {
+        var session = _playerManager.GetSessionByChannel(args.Channel);
+
         if (!_isEnabled)
         {
             SendToGame(session);
