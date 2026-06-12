@@ -12,7 +12,7 @@ namespace Content.Server.SS220.EPA;
 
 public sealed partial class EPAManager
 {
-    private AuthMode _authMode; // not necessary, huh?
+    private AuthMode _authMode;
     private EPAMode _epaMode;
 
     // (PeerConnectionId, TCS)
@@ -49,7 +49,12 @@ public sealed partial class EPAManager
         args.Channel.SendMessage(msg);
 
         if (_epaMode == EPAMode.Disabled)
+        {
+            if (AuthFinished != null)
+                return AuthFinished.Invoke(msg.MsgChannel);
+
             return Task.CompletedTask;
+        }
 
         _sawmill.Debug($"Paused handshake for {args.Channel.ToPrettyString()} and waiting next steps");
 
@@ -67,22 +72,16 @@ public sealed partial class EPAManager
 
     private void OnDisconnect(object? sender, NetDisconnectedArgs args)
     {
-        _sawmill.Debug($"{args.Channel.ToPrettyString()} disconnected during handshake");
         CancelHandshake(args.Channel);
     }
 
     private void OnLogin(MsgEPALogin msg)
     {
+        if (_epaMode == EPAMode.Disabled)
+            return;
+
         Task.Run(async () =>
         {
-            if (_epaMode == EPAMode.Disabled)
-            {
-                if (AuthFinished != null)
-                    await AuthFinished.Invoke(msg.MsgChannel);
-
-                return;
-            }
-
             if (!TryReadToken(msg.MsgChannel, msg.Token, out var payload))
             {
                 _sawmill.Debug($"{msg.MsgChannel.ToPrettyString()} token rejected, token was: {msg.Token}");
@@ -115,18 +114,6 @@ public sealed partial class EPAManager
                 _net.ReSetupChannel(msg.MsgChannel, newData);
             }
 
-            if (_epaMode == EPAMode.Validation && _authMode == AuthMode.Required
-                && channel.AuthType == LoginType.LoggedIn)
-            {
-                // temporal mechanism for soft migration of players to full EPA auth
-                var token = await SignToken(channel.UserId);
-                var newSession = new MsgEPANewSession()
-                {
-                    Token = token,
-                };
-                channel.SendMessage(newSession);
-            }
-
             if (AuthFinished != null)
                 await AuthFinished.Invoke(msg.MsgChannel);
 
@@ -145,6 +132,7 @@ public sealed partial class EPAManager
     {
         if (TryGetHandshakeState(channel, out var state))
         {
+            _sawmill.Debug($"{channel.ToPrettyString()} disconnected during handshake");
             _handshakes.Remove(channel.ConnectionId);
             state.Tcs.SetCanceled();
         }
@@ -161,8 +149,24 @@ public sealed partial class EPAManager
 
     private void OnCreateSession(MsgEPACreateSession msg)
     {
+        if (_epaMode == EPAMode.Disabled)
+            return;
+
         Task.Run(async () =>
         {
+            if (_epaMode == EPAMode.Validation && _authMode == AuthMode.Required
+                && msg.MsgChannel.AuthType == LoginType.LoggedIn)
+            {
+                // temporal mechanism for soft migration of players to full EPA auth
+                var token = await SignToken(msg.MsgChannel.UserId);
+                var newSession = new MsgEPANewSession()
+                {
+                    Token = token,
+                };
+                msg.MsgChannel.SendMessage(newSession);
+                return;
+            }
+
             var (authUrl, code) = await CreateSession();
 
             if (TryGetHandshakeState(msg.MsgChannel, out var state))
@@ -180,6 +184,9 @@ public sealed partial class EPAManager
 
     private void OnSessionCheck(MsgEPACheckSession msg)
     {
+        if (_epaMode == EPAMode.Disabled)
+            return;
+
         Task.Run(async () =>
         {
             if (TryGetHandshakeState(msg.MsgChannel, out var state))
