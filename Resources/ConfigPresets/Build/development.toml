@@ -3,6 +3,7 @@
 lobbyenabled = false
 map = "NFDev"
 role_timers = false
+persistguests = true
 
 [ghost]
 role_time = 0.5
