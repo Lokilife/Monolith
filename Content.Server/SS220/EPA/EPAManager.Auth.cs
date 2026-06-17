@@ -296,7 +296,7 @@ public sealed partial class EPAManager
 
         if (data.Status == EPASessionStatus.Passed && data.Token == null)
             throw new Exception("Server sent invalid response");
-        else if (data.Token != null)
+        else if (data.Status != EPASessionStatus.Passed && data.Token != null)
             throw new Exception("Server sent invalid response");
 
         return (data.Status, data.Token);

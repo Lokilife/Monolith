@@ -14,6 +14,7 @@ public sealed partial class EPAAuthPanel : Control
 {
     [Dependency] private IClientEPAManager _epa = default!;
     [Dependency] private IClientConsoleHost _consoleHost = default!;
+    [Dependency] private IUriOpener _uri = default!;
 
     public EPAAuthPanel()
     {
@@ -31,7 +32,7 @@ public sealed partial class EPAAuthPanel : Control
         {
             if (!string.IsNullOrEmpty(_epa.AuthUrl))
             {
-                IoCManager.Resolve<IUriOpener>().OpenUri(_epa.AuthUrl);
+                _uri.OpenUri(_epa.AuthUrl);
             }
         };
     }

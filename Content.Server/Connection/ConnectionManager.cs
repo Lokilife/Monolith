@@ -21,8 +21,7 @@ using Robust.Shared.Player;
 using Robust.Shared.Timing;
 using Content.Server._NF.Auth; // Frontier
 using Content.Shared.SS220.CCVars; // SS220-Queue
-using Content.Shared.SS220.EPA;
-using System.Security.Authentication.ExtendedProtection; // SS220-EPA
+using Content.Shared.SS220.EPA; // SS220-EPA
 
 /*
  * TODO: Remove baby jail code once a more mature gateway process is established. This code is only being issued as a stopgap to help with potential tiding in the immediate future.

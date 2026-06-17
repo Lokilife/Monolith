@@ -147,7 +147,7 @@ public sealed partial class EPAManager : IClientEPAManager
             using var reader = new StreamReader(stream, EncodingHelpers.UTF8);
             var buffer = new char[DataFileSizeLimit];
             var data = reader.Read(buffer, 0, DataFileSizeLimit);
-            token = new string(buffer);
+            token = new string(buffer, 0, data);
             return true;
         }
         catch (FileNotFoundException)
