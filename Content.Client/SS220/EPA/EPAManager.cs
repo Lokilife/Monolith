@@ -43,11 +43,11 @@ public sealed partial class EPAManager : IClientEPAManager
         _net.RegisterNetMessage<MsgEPAHello>(OnHello, accept: NetMessageAccept.Client | NetMessageAccept.Handshake);
         _net.RegisterNetMessage<MsgEPAReject>(OnReject, accept: NetMessageAccept.Client | NetMessageAccept.Handshake);
         _net.RegisterNetMessage<MsgEPAAccept>(OnAccept, accept: NetMessageAccept.Client | NetMessageAccept.Handshake);
-        _net.RegisterNetMessage<MsgEPACreateSessionRes>(OnCreateSessionResponse, accept: NetMessageAccept.Client | NetMessageAccept.Handshake);
+        _net.RegisterNetMessage<MsgEPACreateSessionRes>(OnCreateSessionRes, accept: NetMessageAccept.Client | NetMessageAccept.Handshake);
         _net.RegisterNetMessage<MsgEPANewSession>(OnNewSession, accept: NetMessageAccept.Client | NetMessageAccept.Handshake);
     }
 
-    #region Event Handlers
+    #region Message Handlers
 
     private void OnHello(MsgEPAHello msg)
     {
@@ -57,7 +57,7 @@ public sealed partial class EPAManager : IClientEPAManager
 
     private void OnReject(MsgEPAReject msg)
     {
-        BeginNewSession();
+        RequestNewSession();
     }
 
     private void OnAccept(MsgEPAAccept msg)
@@ -65,7 +65,7 @@ public sealed partial class EPAManager : IClientEPAManager
         _credentials = (new NetUserId(msg.UserId), msg.Username);
     }
 
-    private void OnCreateSessionResponse(MsgEPACreateSessionRes msg)
+    private void OnCreateSessionRes(MsgEPACreateSessionRes msg)
     {
         AuthUrl = msg.AuthUrl;
 
@@ -85,6 +85,10 @@ public sealed partial class EPAManager : IClientEPAManager
             TryAuthorize();
         }
     }
+
+    #endregion
+
+    #region Connection Events
 
     private void OnConnected(object? sender, NetChannelArgs args)
     {
@@ -116,20 +120,19 @@ public sealed partial class EPAManager : IClientEPAManager
     {
         if (!TryReadToken(out var savedToken))
         {
-            BeginNewSession();
+            RequestNewSession();
             return;
         }
 
-        var loginMsg = new MsgEPALogin()
+        var loginMsg = new MsgEPALogin
         {
             Token = savedToken
         };
 
         _net.ClientSendMessage(loginMsg);
-        return;
     }
 
-    private void BeginNewSession()
+    private void RequestNewSession()
     {
         var newMsg = new MsgEPACreateSession();
         _net.ClientSendMessage(newMsg);
@@ -180,7 +183,7 @@ public sealed partial class EPAManager : IClientEPAManager
     /// <inheritdoc />
     public void CheckAuthState()
     {
-        DebugTools.Assert(_credentials != null, "Tried to check auth state when already authorized");
+        DebugTools.Assert(_credentials == null, "Tried to check auth state when already authorized");
 
         if (_credentials != null)
             return;

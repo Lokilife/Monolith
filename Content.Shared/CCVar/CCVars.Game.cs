@@ -141,7 +141,7 @@ public sealed partial class CCVars
     ///     When enabled, guests will be assigned permanent UIDs and will have their preferences stored.
     /// </summary>
     public static readonly CVarDef<bool> GamePersistGuests =
-        CVarDef.Create("game.persistguests", true, CVar.ARCHIVE | CVar.SERVERONLY);
+        CVarDef.Create("game.persistguests", false, CVar.ARCHIVE | CVar.SERVERONLY); // SS220: true>false due to EPA auth
 
     public static readonly CVarDef<bool> GameDiagonalMovement =
         CVarDef.Create("game.diagonalmovement", true, CVar.ARCHIVE);

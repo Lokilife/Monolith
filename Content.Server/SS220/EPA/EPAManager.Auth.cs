@@ -1,17 +1,28 @@
 // (c) Space Exodus Team - EXDS-RL with CLA
 
 using System.Diagnostics.CodeAnalysis;
+using System.Net.Http.Json;
+using System.Runtime.Serialization;
 using System.Threading.Tasks;
+using Content.Server.SS220.EPA.DTO;
 using Content.Server.SS220.Extensions;
 using Content.Shared.CCVar;
 using Content.Shared.SS220.CCVars;
 using Content.Shared.SS220.EPA;
 using Robust.Shared.Network;
+using Robust.Shared.Utility;
 
 namespace Content.Server.SS220.EPA;
 
 public sealed partial class EPAManager
 {
+    private sealed class EPAHandshakeState
+    {
+        public required TaskCompletionSource Tcs;
+        public required INetChannel Channel;
+        public string? SessionCode;
+    }
+
     private AuthMode _authMode;
     private EPAMode _epaMode;
 
@@ -30,7 +41,7 @@ public sealed partial class EPAManager
         _net.Disconnect += OnDisconnect;
 
         _net.RegisterNetMessage<MsgEPALogin>(OnLogin, accept: NetMessageAccept.Server | NetMessageAccept.Handshake);
-        _net.RegisterNetMessage<MsgEPACheckSession>(OnSessionCheck, accept: NetMessageAccept.Server | NetMessageAccept.Handshake);
+        _net.RegisterNetMessage<MsgEPACheckSession>(OnCheckSession, accept: NetMessageAccept.Server | NetMessageAccept.Handshake);
         _net.RegisterNetMessage<MsgEPACreateSession>(OnCreateSession, accept: NetMessageAccept.Server | NetMessageAccept.Handshake);
 
         _net.RegisterNetMessage<MsgEPAHello>(accept: NetMessageAccept.Client | NetMessageAccept.Handshake);
@@ -39,6 +50,8 @@ public sealed partial class EPAManager
         _net.RegisterNetMessage<MsgEPACreateSessionRes>(accept: NetMessageAccept.Client | NetMessageAccept.Handshake);
         _net.RegisterNetMessage<MsgEPANewSession>(accept: NetMessageAccept.Client | NetMessageAccept.Handshake);
     }
+
+    #region Connection Events
 
     private Task OnHandshake(NetChannelArgs args)
     {
@@ -75,6 +88,10 @@ public sealed partial class EPAManager
         CancelHandshake(args.Channel);
     }
 
+    #endregion
+
+    #region Message Handlers
+
     private void OnLogin(MsgEPALogin msg)
     {
         if (_epaMode == EPAMode.Disabled)
@@ -86,12 +103,7 @@ public sealed partial class EPAManager
             {
                 _sawmill.Debug($"{msg.MsgChannel.ToPrettyString()} token rejected, token was: {msg.Token}");
 
-                var rejectMsg = new MsgEPAReject
-                {
-                    Reason = "epa-token-invalid-message"
-                };
-
-                msg.MsgChannel.SendMessage(rejectMsg);
+                SendReject(msg.MsgChannel, "epa-token-invalid-message");
 
                 return;
             }
@@ -128,6 +140,88 @@ public sealed partial class EPAManager
         });
     }
 
+    private void OnCreateSession(MsgEPACreateSession msg)
+    {
+        if (_epaMode == EPAMode.Disabled)
+            return;
+
+        Task.Run(async () =>
+        {
+            if (_epaMode == EPAMode.Validation && _authMode == AuthMode.Required
+                && msg.MsgChannel.AuthType == LoginType.LoggedIn)
+            {
+                // temporal mechanism for soft migration of players to full EPA auth
+                var token = await RequestTokenAsync(msg.MsgChannel.UserId);
+                var newSession = new MsgEPANewSession()
+                {
+                    Token = token,
+                };
+                msg.MsgChannel.SendMessage(newSession);
+                return;
+            }
+
+            await BeginSessionCreationAsync(msg.MsgChannel);
+        });
+    }
+
+    private void OnCheckSession(MsgEPACheckSession msg)
+    {
+        if (_epaMode == EPAMode.Disabled)
+            return;
+
+        Task.Run(async () =>
+        {
+            if (TryGetHandshakeState(msg.MsgChannel, out var state))
+            {
+                if (state.SessionCode == null)
+                {
+                    _sawmill.Warning($"{msg.MsgChannel.ToPrettyString()} asked to validate session without a session code");
+                    return;
+                }
+
+                var (status, token) = await CheckSessionCodeAsync(state.SessionCode);
+
+                switch (status)
+                {
+                    case EPASessionStatus.Waiting:
+                        return;
+                    case EPASessionStatus.Expired:
+                        // start handshake from beginning
+                        await BeginSessionCreationAsync(msg.MsgChannel);
+                        return;
+                    case EPASessionStatus.Rejected:
+                        SendReject(msg.MsgChannel, "epa-session-rejected");
+                        return;
+                }
+
+                DebugTools.Assert(token != null);
+
+                var res = new MsgEPANewSession()
+                {
+                    Token = token
+                };
+                msg.MsgChannel.SendMessage(res);
+            }
+        });
+    }
+
+    #endregion
+
+    #region Private API
+
+    private bool TryGetHandshakeState(INetChannel channel, [NotNullWhen(true)] out EPAHandshakeState? state)
+    {
+        state = null;
+
+        if (_handshakes.TryGetValue(channel.ConnectionId, out var fetched)) // why do TryGetValue returns non-nullable result?
+        {
+            state = fetched;
+            return true;
+        }
+
+        return false;
+    }
+
     private void CancelHandshake(INetChannel channel)
     {
         if (TryGetHandshakeState(channel, out var state))
@@ -147,127 +241,68 @@ public sealed partial class EPAManager
         }
     }
 
-    private void OnCreateSession(MsgEPACreateSession msg)
+    private async Task BeginSessionCreationAsync(INetChannel channel)
     {
-        if (_epaMode == EPAMode.Disabled)
-            return;
-
-        Task.Run(async () =>
+        if (!TryGetHandshakeState(channel, out var state))
         {
-            if (_epaMode == EPAMode.Validation && _authMode == AuthMode.Required
-                && msg.MsgChannel.AuthType == LoginType.LoggedIn)
-            {
-                // temporal mechanism for soft migration of players to full EPA auth
-                var token = await SignToken(msg.MsgChannel.UserId);
-                var newSession = new MsgEPANewSession()
-                {
-                    Token = token,
-                };
-                msg.MsgChannel.SendMessage(newSession);
-                return;
-            }
-
-            var (authUrl, code) = await CreateSession();
-
-            if (TryGetHandshakeState(msg.MsgChannel, out var state))
-            {
-                state.SessionCode = code;
-            }
-
-            var res = new MsgEPACreateSessionRes()
-            {
-                AuthUrl = authUrl,
-            };
-            msg.MsgChannel.SendMessage(res);
-        });
-    }
-
-    private void OnSessionCheck(MsgEPACheckSession msg)
-    {
-        if (_epaMode == EPAMode.Disabled)
-            return;
-
-        Task.Run(async () =>
-        {
-            if (TryGetHandshakeState(msg.MsgChannel, out var state))
-            {
-                if (state.SessionCode == null)
-                {
-                    _sawmill.Warning($"{msg.MsgChannel.ToPrettyString()} asked to validate session without a session code");
-                    return;
-                }
-
-                var token = await CheckSessionCode(state.SessionCode);
-
-                if (token == null)
-                    return;
-
-                var res = new MsgEPANewSession()
-                {
-                    Token = token
-                };
-                msg.MsgChannel.SendMessage(res);
-            }
-        });
-    }
-
-    private bool TryGetHandshakeState(INetChannel channel, [NotNullWhen(true)] out EPAHandshakeState? state)
-    {
-        state = null;
-
-        if (_handshakes.TryGetValue(channel.ConnectionId, out var fetched)) // why do TryGetValue returns non-nullable result?
-        {
-            state = fetched;
-            return true;
+            throw new InvalidOperationException("Tried to create new session for channel after handshake completion");
         }
 
-        return false;
+        var (authUrl, code) = await CreateSessionAsync();
+        state.SessionCode = code;
+
+        var res = new MsgEPACreateSessionRes()
+        {
+            AuthUrl = authUrl,
+        };
+        channel.SendMessage(res);
     }
 
-    private async Task<(string AuthUrl, string SessionCode)> CreateSession()
+    private void SendReject(INetChannel channel, string message)
     {
-        // TODO: use real API call to get new session code
-        return ("https://auth0.ss220.club/insert-your-code-here", "insert-your-code-here");
+        var rejectMsg = new MsgEPAReject
+        {
+            Reason = message
+        };
+
+        channel.SendMessage(rejectMsg);
     }
 
-    private async Task<string> SignToken(Guid uuid)
+    #region HTTP API
+
+    private async Task<(string AuthUrl, string SessionCode)> CreateSessionAsync()
     {
-        // TODO: real API request
+        var res = await _http.GetAsync($"{_apiUrl}/ss14/GameAuth/getLink");
+        var data = await res.Content.ReadFromJsonAsync<CreateSessionResDTO>() ??
+            throw new SerializationException("Deserialized object is null");
 
-        // debug token, see CheckSessionCode for details
-        return "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI5NTczZWE0MC1lZWQyLTRjM2QtYTAzOC05OGM0YmVlYTZlZTEiLCJ1c2VybmFtZSI6Ikxva2lsaWZlVEMiLCJhdWQiOiJodHRwczovL2dhbWUuc3MyMjAuY2x1Yi8iLCJpc3MiOiJodHRwczovL2F1dGgwLnNzMjIwLmNsdWIvIiwiaXBzIjpbIjEyNy4wLjAuMSIsIjAuMC4wLjAiXSwiaWF0IjoxNzgxMTg3MjQ4LCJleHAiOjE3ODE4Njc2NDJ9.eVjPufNob_4LqzIOYerZp7YF2n6bqGP3nIb5E3oBeLsv5xOaoyWKWJgeuKIzVbswMJVncl5KXJ3ySWFpbysDsw";
+        return (data.AuthUrl, data.SessionCode);
     }
 
-    private async Task<string?> CheckSessionCode(string code)
+    private async Task<string> RequestTokenAsync(Guid uuid)
     {
-        // TODO: real API code check
+        var res = await _http.PostAsync($"{_apiUrl}/ss14/GameAuth/requestToken/{uuid}", null);
+        var data = await res.Content.ReadFromJsonAsync<RequestTokenResDTO>() ??
+            throw new SerializationException("Failed to deserialize server response");
 
-        // this is my manually created token for debug purposes with ES256 which is valid till June 19th, 2026
-        // {
-        //   "sub": "9573ea40-eed2-4c3d-a038-98c4beea6ee1",
-        //   "username": "LokilifeTC",
-        //   "aud": "https://game.ss220.club/",
-        //   "iss": "https://auth0.ss220.club/",
-        //   "ips": [
-        //     "127.0.0.1",
-        //     "0.0.0.0"
-        //   ],
-        //   "iat": 1781187248,
-        //   "exp": 1781867642
-        // }
-        // here is my public DER key to validate it:
-        // jwt_key = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEkwtjMnygN/Fs3DUdFb4RM+9GqQJL2A2KXlGHI1iTVMPFPSOrjLmS8u/n+3hTSjIo8M1Rn2lBucQChqlSI+bCnw=="
-        // just insert it to [epa] section in server_config.toml
-
-        // or you can try to create your own token with your own signature on https://jwt.io
-        // here is one-line command to generate ES256 keys in all needed formats in current working dir:
-        /*
-        openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out private-key.pem && \
-            openssl pkey -in private-key.pem -pubout -out public-key.pem && \
-            openssl pkey -in private-key.pem -outform DER | openssl base64 -e -A > private-key-der.base64 && \
-            openssl pkey -in private-key.pem -pubout -outform DER | openssl base64 -e -A > public-key-der.base64
-        */
-
-        return "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI5NTczZWE0MC1lZWQyLTRjM2QtYTAzOC05OGM0YmVlYTZlZTEiLCJ1c2VybmFtZSI6Ikxva2lsaWZlVEMiLCJhdWQiOiJodHRwczovL2dhbWUuc3MyMjAuY2x1Yi8iLCJpc3MiOiJodHRwczovL2F1dGgwLnNzMjIwLmNsdWIvIiwiaXBzIjpbIjEyNy4wLjAuMSIsIjAuMC4wLjAiXSwiaWF0IjoxNzgxMTg3MjQ4LCJleHAiOjE3ODE4Njc2NDJ9.eVjPufNob_4LqzIOYerZp7YF2n6bqGP3nIb5E3oBeLsv5xOaoyWKWJgeuKIzVbswMJVncl5KXJ3ySWFpbysDsw";
+        return data.Token;
     }
+
+    private async Task<(EPASessionStatus, string?)> CheckSessionCodeAsync(string code)
+    {
+        var res = await _http.GetAsync($"{_apiUrl}/ss14/GameAuth/check?key={Uri.EscapeDataString(code)}");
+        var data = await res.Content.ReadFromJsonAsync<CheckSessionResDTO>() ??
+            throw new SerializationException("Failed to deserialize server response");
+
+        if (data.Status == EPASessionStatus.Passed && data.Token == null)
+            throw new Exception("Server sent invalid response");
+        else if (data.Token != null)
+            throw new Exception("Server sent invalid response");
+
+        return (data.Status, data.Token);
+    }
+
+    #endregion HTTP API
+
+    #endregion Private API
 }

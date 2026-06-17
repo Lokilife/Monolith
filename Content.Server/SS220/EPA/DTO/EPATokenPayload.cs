@@ -2,8 +2,9 @@
 
 using System.Net;
 using System.Text.Json.Serialization;
+using Content.Server.SS220.Serialization;
 
-namespace Content.Server.SS220.EPA;
+namespace Content.Server.SS220.EPA.DTO;
 
 public sealed partial class EPATokenPayload
 {
@@ -26,5 +27,6 @@ public sealed partial class EPATokenPayload
     public string Username { get; set; } = string.Empty;
 
     [JsonPropertyName("ips")]
+    [JsonConverter(typeof(IPAddressArrayConverter))]
     public IPAddress[] IPs { get; set; } = [];
 }

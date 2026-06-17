@@ -6,8 +6,8 @@ using System.IO;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Content.Server.SS220.EPA.DTO;
 using Content.Server.SS220.Extensions;
-using Content.Server.SS220.Serialization;
 using Content.Shared.SS220.CCVars;
 using Microsoft.IdentityModel.Tokens;
 using Robust.Shared.Network;
@@ -21,7 +21,6 @@ public sealed partial class EPAManager
 
     private JwtSecurityTokenHandler _tokenHandler = default!;
     private TokenValidationParameters _tokenValidation = default!;
-    private JsonSerializerOptions _serializerOptions = default!;
 
     private void InitializeJWT()
     {
@@ -37,16 +36,18 @@ public sealed partial class EPAManager
             RequireSignedTokens = true
         };
 
-        _serializerOptions = new()
+        var pemKey = _config.GetCVar(CCVars220.EPAJwtPemKeyPath);
+        if (!TryImportPem(pemKey))
         {
-            Converters = { new IPAddressConverter(), new IPAddressArrayConverter() },
-        };
+            var derKey = _config.GetCVar(CCVars220.EPAJwtDerKey);
+            TryImportDer(derKey);
+        }
 
-        _config.OnValueChanged(CCVars220.EPAJWTKey, OnRawKeyChange, true);
-        _config.OnValueChanged(CCVars220.EPAJWTKeyPemPath, OnPemPathChange, true);
-        _config.OnValueChanged(CCVars220.EPAJWTIssuer, OnIssuerChange, true);
-        _config.OnValueChanged(CCVars220.EPAJWTAudience, OnAudienceChange, true);
-        _config.OnValueChanged(CCVars220.EPAJWTClockSkew, OnClockSkewChange, true);
+        _config.OnValueChanged(CCVars220.EPAJwtDerKey, OnRawKeyChange);
+        _config.OnValueChanged(CCVars220.EPAJwtPemKeyPath, OnPemPathChange);
+        _config.OnValueChanged(CCVars220.EPAJwtIssuer, OnIssuerChange, true);
+        _config.OnValueChanged(CCVars220.EPAJwtAudience, OnAudienceChange, true);
+        _config.OnValueChanged(CCVars220.EPAJwtClockSkew, OnClockSkewChange, true);
     }
 
     private void OnIssuerChange(string issuer)
@@ -71,10 +72,18 @@ public sealed partial class EPAManager
         if (string.IsNullOrEmpty(newPath))
             return;
 
+        TryImportPem(newPath);
+    }
+
+    private bool TryImportPem(string newPath)
+    {
+        if (string.IsNullOrEmpty(newPath))
+            return false;
+
         if (!File.Exists(newPath))
         {
             _sawmill.Error("Submitted path for PEM-key to invalid location");
-            return;
+            return false;
         }
 
         var raw = File.ReadAllText(newPath, EncodingHelpers.UTF8);
@@ -82,10 +91,12 @@ public sealed partial class EPAManager
         {
             _ecdsa.ImportFromPem(raw);
             UpdateJwtKey();
+            return true;
         }
         catch (Exception ex)
         {
             _sawmill.Error($"Error occured during importing PEM key at {newPath}\n{ex.ToStringBetter()}");
+            return false;
         }
     }
 
@@ -94,15 +105,25 @@ public sealed partial class EPAManager
         if (string.IsNullOrEmpty(newKey))
             return;
 
+        TryImportDer(newKey);
+    }
+
+    private bool TryImportDer(string newKey)
+    {
+        if (string.IsNullOrEmpty(newKey))
+            return false;
+
         try
         {
             var derBytes = Convert.FromBase64String(newKey);
             _ecdsa.ImportSubjectPublicKeyInfo(derBytes, out _);
             UpdateJwtKey();
+            return true;
         }
         catch (Exception ex)
         {
             _sawmill.Error($"Error occured during importing DER key\n{ex.ToStringBetter()}");
+            return false;
         }
     }
 
@@ -126,7 +147,7 @@ public sealed partial class EPAManager
             if (validatedToken is not JwtSecurityToken jwt) return false;
 
             var payloadJson = jwt.Payload.SerializeToJson();
-            var deserializedPayload = JsonSerializer.Deserialize<EPATokenPayload>(payloadJson, _serializerOptions);
+            var deserializedPayload = JsonSerializer.Deserialize<EPATokenPayload>(payloadJson);
 
             if (deserializedPayload == null)
             {

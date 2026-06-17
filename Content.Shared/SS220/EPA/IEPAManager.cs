@@ -1,3 +1,5 @@
+// (c) Space Exodus Team - EXDS-RL with CLA
+
 using System.Threading.Tasks;
 using Robust.Shared.Network;
 
