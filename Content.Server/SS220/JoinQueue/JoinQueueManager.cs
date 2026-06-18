@@ -1,6 +1,7 @@
 // (c) Space Exodus Team - EXDS-RL with CLA
 
 using System.Linq;
+using System.Threading.Tasks;
 using Content.Server.Connection;
 using Content.Shared.CCVar;
 using Content.Shared.SS220.CCVars;
@@ -58,8 +59,6 @@ public sealed partial class JoinQueueManager
 
         _cfg.OnValueChanged(CCVars220.QueueEnabled, OnQueueCVarChanged, true);
         _playerManager.PlayerStatusChanged += OnPlayerStatusChanged;
-
-        _netManager.Connected += OnConnected;
     }
 
     private void OnQueueCVarChanged(bool value)
@@ -75,10 +74,13 @@ public sealed partial class JoinQueueManager
         }
     }
 
-    private async void OnConnected(object? sender, NetChannelArgs args)
+    /// <summary>
+    /// Wrapper around IPlayerManager that handles player queues and may delay actual session join.
+    /// Fires _playerManager.JoinGame through Timer.Spawn(0).
+    /// Should be called only after ICommonSession.ContentData is set.
+    /// </summary>
+    public async Task JoinGame(ICommonSession session)
     {
-        var session = _playerManager.GetSessionByChannel(args.Channel);
-
         if (!_isEnabled)
         {
             SendToGame(session);
