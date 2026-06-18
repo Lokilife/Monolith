@@ -1,4 +1,3 @@
-using Content.Server.SS220.JoinQueue; // SS220
 using Content.Shared.Administration;
 using Content.Shared.CCVar;
 using Content.Shared.GameTicking;
@@ -20,7 +19,6 @@ namespace Content.Server.GameTicking
     public sealed partial class GameTicker
     {
         [Dependency] private IPlayerManager _playerManager = default!;
-        [Dependency] private JoinQueueManager _joinQueue = default!; // SS220-Queue
 
         private void InitializePlayer()
         {
@@ -58,7 +56,7 @@ namespace Content.Server.GameTicking
 
                     // Make the player actually join the game.
                     // timer time must be > tick length
-                    await _joinQueue.JoinGame(args.Session); // SS220-Queue
+                    await _queueManager.JoinGame(args.Session); // SS220-Queue
 
                     var record = await _db.GetPlayerRecordByUserId(args.Session.UserId);
                     var firstConnection = record != null &&
