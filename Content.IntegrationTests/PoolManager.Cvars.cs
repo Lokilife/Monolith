@@ -36,6 +36,7 @@ public static partial class PoolManager
         (CCVars.MovementMobPushing.Name, "false"),
         (CCVars.GameLobbyDefaultPreset.Name, "secret"), // Frontier: Adventure takes ages, default to secret
         (CCVars.StaticStorageUI.Name, "true"),// Frontier: causes storage test failures
-        (CCVars.StorageLimit.Name, "1")// Frontier: test failures with multiple storage 
+        (CCVars.StorageLimit.Name, "1"),// Frontier: test failures with multiple storage
+        (CCVars.GamePersistGuests.Name, "true") // SS220-EPA: Game isn't supposed to be run with guest mode and without guests persistance
     };
 }
