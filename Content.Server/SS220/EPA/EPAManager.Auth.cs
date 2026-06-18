@@ -1,5 +1,6 @@
 // (c) Space Exodus Team - EXDS-RL with CLA
 
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Net.Http.Json;
 using System.Runtime.Serialization;
@@ -27,7 +28,7 @@ public sealed partial class EPAManager
     private EPAMode _epaMode;
 
     // (PeerConnectionId, TCS)
-    private readonly Dictionary<long, EPAHandshakeState> _handshakes = new();
+    private readonly ConcurrentDictionary<long, EPAHandshakeState> _handshakes = new();
 
     /// <inheritdoc />
     public event Func<INetChannel, Task>? AuthFinished;
@@ -78,7 +79,7 @@ public sealed partial class EPAManager
             Channel = args.Channel,
             Tcs = tcs
         };
-        _handshakes.Add(args.Channel.ConnectionId, state);
+        _handshakes.TryAdd(args.Channel.ConnectionId, state);
 
         return tcs.Task;
     }
@@ -147,10 +148,11 @@ public sealed partial class EPAManager
 
         Task.Run(async () =>
         {
-            if (_epaMode == EPAMode.Validation && _authMode == AuthMode.Required
+            // temporal mechanism for soft migration of players to full EPA auth
+            if (_epaMode == EPAMode.Validation
+                && _authMode == AuthMode.Required
                 && msg.MsgChannel.AuthType == LoginType.LoggedIn)
             {
-                // temporal mechanism for soft migration of players to full EPA auth
                 var token = await RequestTokenAsync(msg.MsgChannel.UserId);
                 var newSession = new MsgEPANewSession()
                 {
@@ -185,13 +187,17 @@ public sealed partial class EPAManager
                 {
                     case EPASessionStatus.Waiting:
                         return;
+
                     case EPASessionStatus.Expired:
-                        // start handshake from beginning
                         await BeginSessionCreationAsync(msg.MsgChannel);
                         return;
+
                     case EPASessionStatus.Rejected:
                         SendReject(msg.MsgChannel, "epa-session-rejected");
                         return;
+
+                    default:
+                        break;
                 }
 
                 DebugTools.Assert(token != null);
@@ -227,7 +233,7 @@ public sealed partial class EPAManager
         if (TryGetHandshakeState(channel, out var state))
         {
             _sawmill.Debug($"{channel.ToPrettyString()} disconnected during handshake");
-            _handshakes.Remove(channel.ConnectionId);
+            _handshakes.TryRemove(channel.ConnectionId, out _);
             state.Tcs.SetCanceled();
         }
     }
@@ -236,7 +242,7 @@ public sealed partial class EPAManager
     {
         if (TryGetHandshakeState(channel, out var state))
         {
-            _handshakes.Remove(channel.ConnectionId);
+            _handshakes.TryRemove(channel.ConnectionId, out _);
             state.Tcs.SetResult();
         }
     }
