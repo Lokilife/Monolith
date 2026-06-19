@@ -31,7 +31,20 @@ public sealed partial class EPAManager
     private readonly ConcurrentDictionary<long, EPAHandshakeState> _handshakes = new();
 
     /// <inheritdoc />
-    public event Func<INetChannel, Task>? AuthFinished;
+    public event Func<INetChannel, Task> AuthFinished
+    {
+        add => _authFinishedEvent.Add(value);
+        remove => _authFinishedEvent.Remove(value);
+    }
+
+    private readonly List<Func<INetChannel, Task>> _authFinishedEvent = new();
+    private async Task OnAuthFinished(INetChannel channel)
+    {
+        foreach (var handler in _authFinishedEvent)
+        {
+            await handler(channel);
+        }
+    }
 
     private void InitializeAuth()
     {
@@ -64,10 +77,7 @@ public sealed partial class EPAManager
 
         if (_epaMode == EPAMode.Disabled)
         {
-            if (AuthFinished != null)
-                return AuthFinished.Invoke(msg.MsgChannel);
-
-            return Task.CompletedTask;
+            return OnAuthFinished(args.Channel);
         }
 
         _sawmill.Debug($"Paused handshake for {args.Channel.ToPrettyString()} and waiting next steps");
@@ -124,11 +134,10 @@ public sealed partial class EPAManager
                     // Trust
                 };
                 _sawmill.Debug("Performing net channel re-setup");
-                _net.ReSetupChannel(msg.MsgChannel, newData);
+                _net.ReSetupChannel(msg.MsgChannel, newData, LoginType.LoggedIn);
             }
 
-            if (AuthFinished != null)
-                await AuthFinished.Invoke(msg.MsgChannel);
+            await OnAuthFinished(msg.MsgChannel);
 
             ReleaseHandshake(channel);
 

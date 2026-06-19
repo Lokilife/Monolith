@@ -29,5 +29,5 @@ public interface IServerEPAManager : IEPAManager
     /// <summary>
     /// Invoked when EPA authorization completed before handshake release
     /// </summary>
-    event Func<INetChannel, Task>? AuthFinished;
+    event Func<INetChannel, Task> AuthFinished;
 }

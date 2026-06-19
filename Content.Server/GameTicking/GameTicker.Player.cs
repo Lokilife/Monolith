@@ -1,3 +1,5 @@
+using System.Threading.Tasks;
+using Content.Server.Preferences.Managers;
 using Content.Shared.Administration;
 using Content.Shared.CCVar;
 using Content.Shared.GameTicking;
@@ -9,6 +11,7 @@ using Robust.Server.GameObjects;
 using Robust.Server.Player;
 using Robust.Shared.Audio;
 using Robust.Shared.Enums;
+using Robust.Shared.Network;
 using Robust.Shared.Player;
 using Robust.Shared.Timing;
 using Robust.Shared.Utility;
@@ -43,7 +46,8 @@ namespace Content.Server.GameTicking
             {
                 case SessionStatus.Connected:
                 {
-                    AddPlayerToDb(args.Session.UserId.UserId);
+                    if (ServerPreferencesManager.ShouldStorePrefs(session.AuthType)) // SS220: Fix error caused by "persistguests = false"
+                        await AddPlayerToDb(args.Session.UserId.UserId);
 
                     // Always make sure the client has player data.
                     if (session.Data.ContentDataUncast == null)
@@ -169,7 +173,7 @@ namespace Content.Server.GameTicking
                 JoinAsObserver(session);
             }
 
-            async void AddPlayerToDb(Guid id)
+            async Task AddPlayerToDb(Guid id)
             {
                 if (RoundId != 0 && _runLevel != GameRunLevel.PreRoundLobby)
                 {
@@ -189,7 +193,8 @@ namespace Content.Server.GameTicking
                 _chatManager.DispatchServerMessage(session, Loc.GetString("game-ticker-player-join-game-message"));
 
             _playerGameStatuses[session.UserId] = PlayerGameStatus.JoinedGame;
-            _db.AddRoundPlayers(RoundId, session.UserId);
+            if (ServerPreferencesManager.ShouldStorePrefs(session.AuthType)) // SS220
+                _db.AddRoundPlayers(RoundId, session.UserId);
 
             if (_adminManager.HasAdminFlag(session, AdminFlags.Admin))
             {
@@ -206,7 +211,8 @@ namespace Content.Server.GameTicking
         private void PlayerJoinLobby(ICommonSession session)
         {
             _playerGameStatuses[session.UserId] = LobbyEnabled ? PlayerGameStatus.NotReadyToPlay : PlayerGameStatus.ReadyToPlay;
-            _db.AddRoundPlayers(RoundId, session.UserId);
+            if (ServerPreferencesManager.ShouldStorePrefs(session.AuthType))
+                _db.AddRoundPlayers(RoundId, session.UserId);
 
             var client = session.Channel;
             RaiseNetworkEvent(new TickerJoinLobbyEvent(), client);
