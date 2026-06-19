@@ -48,8 +48,8 @@ public sealed partial class EPAManager
 
     private void InitializeAuth()
     {
-        _config.OnValueChanged(CCVars.AuthMode, val => _authMode = (AuthMode)val, true);
-        _config.OnValueChanged(CCVars220.EPAMode, val => _epaMode = (EPAMode)val, true);
+        _config.OnValueChanged(CCVars.AuthMode, val => _authMode = Enum.IsDefined((AuthMode)val) ? (AuthMode)val : _authMode, true);
+        _config.OnValueChanged(CCVars220.EPAMode, val => _epaMode = Enum.IsDefined((EPAMode)val) ? (EPAMode)val : _epaMode, true);
 
         _net.InitialHandshakeComplete += OnHandshake;
         _net.Disconnect += OnDisconnect;
@@ -103,121 +103,112 @@ public sealed partial class EPAManager
 
     #region Message Handlers
 
-    private void OnLogin(MsgEPALogin msg)
+    private async void OnLogin(MsgEPALogin msg)
     {
         if (_epaMode == EPAMode.Disabled)
             return;
 
-        Task.Run(async () =>
+        if (!TryReadToken(msg.MsgChannel, msg.Token, out var payload))
         {
-            if (!TryReadToken(msg.MsgChannel, msg.Token, out var payload))
+            _sawmill.Debug($"{msg.MsgChannel.ToPrettyString()} token rejected, token was: {msg.Token}");
+
+            SendReject(msg.MsgChannel, "epa-token-invalid-message");
+
+            return;
+        }
+
+        var channel = msg.MsgChannel;
+
+        if (_epaMode == EPAMode.Authorization)
+        {
+            var guid = payload.UserId;
+            var userId = new NetUserId(guid);
+            var newData = new NetUserData(userId, payload.Username)
             {
-                _sawmill.Debug($"{msg.MsgChannel.ToPrettyString()} token rejected, token was: {msg.Token}");
-
-                SendReject(msg.MsgChannel, "epa-token-invalid-message");
-
-                return;
-            }
-
-            var channel = msg.MsgChannel;
-
-            if (_epaMode == EPAMode.Authorization)
-            {
-                var guid = payload.UserId;
-                var userId = new NetUserId(guid);
-                var newData = new NetUserData(userId, payload.Username)
-                {
-                    CreatedTime = channel.UserData.CreatedTime,
-                    HWId = channel.UserData.HWId,
-                    ModernHWIds = channel.UserData.ModernHWIds,
-                    // PatronTier
-                    // Trust
-                };
-                _sawmill.Debug("Performing net channel re-setup");
-                _net.ReSetupChannel(msg.MsgChannel, newData, LoginType.LoggedIn);
-            }
-
-            await OnAuthFinished(msg.MsgChannel);
-
-            ReleaseHandshake(channel);
-
-            var acceptMsg = new MsgEPAAccept()
-            {
-                UserId = channel.UserId,
-                Username = channel.UserName,
+                CreatedTime = channel.UserData.CreatedTime,
+                HWId = channel.UserData.HWId,
+                ModernHWIds = channel.UserData.ModernHWIds,
+                // PatronTier
+                // Trust
             };
-            channel.SendMessage(acceptMsg);
-        });
+            _sawmill.Debug("Performing net channel re-setup");
+            _net.ReSetupChannel(msg.MsgChannel, newData, LoginType.LoggedIn);
+        }
+
+        await OnAuthFinished(msg.MsgChannel);
+
+        ReleaseHandshake(channel);
+
+        var acceptMsg = new MsgEPAAccept()
+        {
+            UserId = channel.UserId,
+            Username = channel.UserName,
+        };
+        channel.SendMessage(acceptMsg);
     }
 
-    private void OnCreateSession(MsgEPACreateSession msg)
+    private async void OnCreateSession(MsgEPACreateSession msg)
     {
         if (_epaMode == EPAMode.Disabled)
             return;
 
-        Task.Run(async () =>
+        // temporal mechanism for soft migration of players to full EPA auth
+        if (_epaMode == EPAMode.Validation
+            && _authMode == AuthMode.Required
+            && msg.MsgChannel.AuthType == LoginType.LoggedIn)
         {
-            // temporal mechanism for soft migration of players to full EPA auth
-            if (_epaMode == EPAMode.Validation
-                && _authMode == AuthMode.Required
-                && msg.MsgChannel.AuthType == LoginType.LoggedIn)
+            var token = await RequestTokenAsync(msg.MsgChannel.UserId);
+            var newSession = new MsgEPANewSession()
             {
-                var token = await RequestTokenAsync(msg.MsgChannel.UserId);
-                var newSession = new MsgEPANewSession()
-                {
-                    Token = token,
-                };
-                msg.MsgChannel.SendMessage(newSession);
+                Token = token,
+            };
+            msg.MsgChannel.SendMessage(newSession);
+            return;
+        }
+
+        await BeginSessionCreationAsync(msg.MsgChannel);
+    }
+
+    private async void OnCheckSession(MsgEPACheckSession msg)
+    {
+        if (_epaMode == EPAMode.Disabled)
+            return;
+
+        if (TryGetHandshakeState(msg.MsgChannel, out var state))
+        {
+            if (state.SessionCode == null)
+            {
+                _sawmill.Warning($"{msg.MsgChannel.ToPrettyString()} asked to validate session without a session code");
                 return;
             }
 
-            await BeginSessionCreationAsync(msg.MsgChannel);
-        });
-    }
+            var (status, token) = await CheckSessionCodeAsync(state.SessionCode);
 
-    private void OnCheckSession(MsgEPACheckSession msg)
-    {
-        if (_epaMode == EPAMode.Disabled)
-            return;
-
-        Task.Run(async () =>
-        {
-            if (TryGetHandshakeState(msg.MsgChannel, out var state))
+            switch (status)
             {
-                if (state.SessionCode == null)
-                {
-                    _sawmill.Warning($"{msg.MsgChannel.ToPrettyString()} asked to validate session without a session code");
+                case EPASessionStatus.Waiting:
                     return;
-                }
 
-                var (status, token) = await CheckSessionCodeAsync(state.SessionCode);
+                case EPASessionStatus.Expired:
+                    await BeginSessionCreationAsync(msg.MsgChannel);
+                    return;
 
-                switch (status)
-                {
-                    case EPASessionStatus.Waiting:
-                        return;
+                case EPASessionStatus.Rejected:
+                    SendReject(msg.MsgChannel, "epa-session-rejected");
+                    return;
 
-                    case EPASessionStatus.Expired:
-                        await BeginSessionCreationAsync(msg.MsgChannel);
-                        return;
-
-                    case EPASessionStatus.Rejected:
-                        SendReject(msg.MsgChannel, "epa-session-rejected");
-                        return;
-
-                    default:
-                        break;
-                }
-
-                DebugTools.Assert(token != null);
-
-                var res = new MsgEPANewSession()
-                {
-                    Token = token
-                };
-                msg.MsgChannel.SendMessage(res);
+                default:
+                    break;
             }
-        });
+
+            DebugTools.Assert(token != null);
+
+            var res = new MsgEPANewSession()
+            {
+                Token = token
+            };
+            msg.MsgChannel.SendMessage(res);
+        }
     }
 
     #endregion
